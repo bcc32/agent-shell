@@ -123,10 +123,10 @@ When non-nil, tool use sections are expanded."
   :group 'agent-shell)
 
 (defvar agent-shell-permission-responder-function nil
-  "When non-nil, a function called instead of showing the permission prompt.
+  "When non-nil, a function called before showing the permission prompt.
 
-When set, the interactive permission dialog is not displayed.
-The function is responsible for calling :respond to approve or reject.
+Return non-nil to indicate the request was handled (UI is skipped).
+Return nil to fall back to the interactive permission dialog.
 
 Called with an alist containing:
 
@@ -143,14 +143,15 @@ Example -- auto-approve reads:
 
   (setq agent-shell-permission-responder-function
         (lambda (permission)
-          (when (equal (map-elt (map-elt permission :tool-call) :kind)
-                       \"read\")
-            (when-let ((opt (seq-find
-                             (lambda (o)
-                               (equal (map-elt o :kind) \"allow_once\"))
-                             (map-elt permission :options))))
-              (funcall (map-elt permission :respond)
-                       (map-elt opt :option-id))))))")
+          (when-let (((equal (map-elt (map-elt permission :tool-call) :kind)
+                             \"read\"))
+                     (choice (seq-find
+                               (lambda (option)
+                                 (equal (map-elt option :kind) \"allow_once\"))
+                               (map-elt permission :options))))
+            (funcall (map-elt permission :respond)
+                     (map-elt choice :option-id))
+            t)))")
 
 (defun agent-shell-permission-allow-always (permission)
   "Auto-approve all permission requests.
@@ -161,11 +162,12 @@ Example:
 
   (setq agent-shell-permission-responder-function
         #\\='agent-shell-permission-allow-always)"
-  (when-let ((opt (seq-find
-                   (lambda (o) (equal (map-elt o :kind) "allow_once"))
-                   (map-elt permission :options))))
+  (when-let ((choice (seq-find
+                      (lambda (option) (equal (map-elt option :kind) "allow_once"))
+                      (map-elt permission :options))))
     (funcall (map-elt permission :respond)
-             (map-elt opt :option-id))))
+             (map-elt choice :option-id))
+    t))
 
 (defcustom agent-shell-user-message-expand-by-default nil
   "Whether user message sections should be expanded by default.
@@ -1542,18 +1544,19 @@ COMMAND, when present, may be a shell command string or an argv vector."
                   (when-let ((diff (agent-shell--make-diff-info
                                     :acp-tool-call (map-nested-elt acp-request '(params toolCall)))))
                     (list (cons :diff diff)))))
-         (if (functionp agent-shell-permission-responder-function)
-             (funcall agent-shell-permission-responder-function
-                      (list (cons :tool-call (map-nested-elt state (list :tool-calls (map-nested-elt acp-request '(params toolCall toolCallId)))))
-                            (cons :options (agent-shell--make-permission-actions
-                                            (map-nested-elt acp-request '(params options))))
-                            (cons :respond (lambda (option-id)
-                                             (agent-shell--send-permission-response
-                                              :client (map-elt state :client)
-                                              :request-id (map-elt acp-request 'id)
-                                              :option-id option-id
-                                              :state state
-                                              :tool-call-id (map-nested-elt acp-request '(params toolCall toolCallId)))))))
+         (unless (and (functionp agent-shell-permission-responder-function)
+                      (funcall agent-shell-permission-responder-function
+                               (list (cons :tool-call (map-nested-elt state (list :tool-calls (map-nested-elt acp-request '(params toolCall toolCallId)))))
+                                     (cons :options (agent-shell--make-permission-actions
+                                                     (map-nested-elt acp-request '(params options))))
+                                     (cons :respond (lambda (option-id)
+                                                      (agent-shell--send-permission-response
+                                                       :client (map-elt state :client)
+                                                       :request-id (map-elt acp-request 'id)
+                                                       :option-id option-id
+                                                       :state state
+                                                       :tool-call-id (map-nested-elt acp-request '(params toolCall toolCallId)))
+                                                      t)))))
            (when (map-nested-elt acp-request '(params toolCall rawInput plan))
              (agent-shell--update-fragment
               :state state
