@@ -37,6 +37,10 @@
 
 (declare-function acp-send-response "acp")
 (declare-function acp-make-error "acp")
+(declare-function agent-shell-heartbeat-start "agent-shell-heartbeat")
+(declare-function agent-shell-heartbeat-stop "agent-shell-heartbeat")
+
+(defvar agent-shell-show-busy-indicator)
 
 (cl-defun agent-shell-experimental--on-session-push-request (&key state acp-request)
   "Handle an incoming session/push ACP-REQUEST with STATE.
@@ -66,6 +70,9 @@ in progress), the request is immediately rejected with an error."
                 (cons request (map-elt state :active-requests))))
     ;; Remove trailing empty shell prompt before push notifications render.
     (agent-shell-experimental--remove-trailing-prompt)
+    (when agent-shell-show-busy-indicator
+      (agent-shell-heartbeat-start
+       :heartbeat (map-elt state :heartbeat)))
     (map-put! state :last-entry-type "session/push")))
 
 (defun agent-shell-experimental--remove-trailing-prompt ()
@@ -93,10 +100,12 @@ to allow the caller to finalize (e.g. display a new shell prompt)."
     (map-put! state :active-requests
               (seq-remove (lambda (r)
                             (equal (map-elt r :method) "session/push"))
-                          (map-elt state :active-requests))))
-  (map-put! state :last-entry-type "session_push_end")
-  (when on-finished
-    (funcall on-finished)))
+                          (map-elt state :active-requests)))
+    (agent-shell-heartbeat-stop
+     :heartbeat (map-elt state :heartbeat))
+    (map-put! state :last-entry-type "session_push_end")
+    (when on-finished
+      (funcall on-finished))))
 
 (cl-defun agent-shell-experimental--make-session-push-response (&key request-id error)
   "Instantiate a \"session/push\" response.
