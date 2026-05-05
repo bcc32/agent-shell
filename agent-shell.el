@@ -2765,6 +2765,7 @@ variable (see makunbound)"))
       (setq-local filter-buffer-substring-function #'agent-shell--filter-buffer-substring)
       (agent-shell--update-header-and-mode-line)
       (add-hook 'kill-buffer-hook #'agent-shell--clean-up nil t)
+      (add-hook 'change-major-mode-hook #'agent-shell--clean-up nil t)
       (agent-shell-ui-mode +1)
       (when agent-shell-file-completion-enabled
         (agent-shell-completion-mode +1))
