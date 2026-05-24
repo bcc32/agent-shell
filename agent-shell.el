@@ -931,43 +931,57 @@ Always prompts for agent selection, even if existing shells are available."
   (agent-shell '(4)))
 
 ;;;###autoload
-(defun agent-shell-new-temp-shell ()
+(cl-defun agent-shell-new-temp-shell (&key config no-display)
   "Start a new agent shell in a temporary directory.
 
-The directory is trashed when the shell buffer is killed."
+The directory is trashed when the shell buffer is killed.
+When CONFIG is non-nil, use it instead of prompting for an agent.
+When NO-DISPLAY is non-nil, don't display the shell buffer."
   (interactive)
   (let* ((location (make-temp-file "temp-" t))
-         (shell-buffer (agent-shell--new-shell :location location)))
+         (shell-buffer (agent-shell--new-shell :location location
+                                               :config config
+                                               :no-display no-display)))
     (with-current-buffer shell-buffer
       (add-hook 'kill-buffer-hook
                 (lambda ()
                   (when (file-directory-p location)
                     (delete-directory location t t)))
-                nil t))))
+                nil t))
+    shell-buffer))
 
 ;;;###autoload
-(defun agent-shell-new-downloads-shell ()
-  "Start a new agent shell in ~/Downloads."
-  (interactive)
-  (agent-shell--new-shell :location (expand-file-name "~/Downloads")))
+(cl-defun agent-shell-new-downloads-shell (&key config no-display)
+  "Start a new agent shell in ~/Downloads.
 
-(cl-defun agent-shell--new-shell (&key location)
+When CONFIG is non-nil, use it instead of prompting for an agent.
+When NO-DISPLAY is non-nil, don't display the shell buffer."
+  (interactive)
+  (agent-shell--new-shell :location (expand-file-name "~/Downloads")
+                          :config config
+                          :no-display no-display))
+
+(cl-defun agent-shell--new-shell (&key location config no-display)
   "Start a new agent shell at LOCATION.
 
-LOCATION is a directory path to use as the shell's working directory."
+LOCATION is a directory path to use as the shell's working directory.
+When CONFIG is non-nil, use it instead of resolving or prompting.
+When NO-DISPLAY is non-nil, don't display the shell buffer."
   (let* ((default-directory location)
          (shell-buffer (agent-shell--start
-                        :config (or (agent-shell--resolve-preferred-config)
+                        :config (or config
+                                    (agent-shell--resolve-preferred-config)
                                     (agent-shell-select-config
                                      :prompt "Start new agent: ")
                                     (error "No agent config found"))
                         :session-strategy 'new
                         :new-session t
                         :no-focus t)))
-    (if agent-shell-prefer-viewport-interaction
-        (agent-shell-viewport--show-buffer
-         :shell-buffer shell-buffer)
-      (agent-shell--display-buffer shell-buffer))
+    (unless no-display
+      (if agent-shell-prefer-viewport-interaction
+          (agent-shell-viewport--show-buffer
+           :shell-buffer shell-buffer)
+        (agent-shell--display-buffer shell-buffer)))
     shell-buffer))
 
 ;;;###autoload
@@ -4478,9 +4492,12 @@ Falls back to latest session in batch mode (e.g. tests)."
                                                                 (length (agent-shell--session-column-value col s)))
                                                               acp-sessions))))
                                    columns)))
-             (session-choices (append (list (cons new-session-choice nil))
+             ;; TODO: Consolidate choices with `agent-shell--shell-buffer'.
+             (session-choices (append (list (cons new-session-choice nil)
+                                            (cons "New Downloads shell" :downloads-shell)
+                                            (cons "New temp shell" :temp-shell))
                                       (when other-shells
-                                        (list (cons "Open existing shell" :other-shell)))
+                                        (list (cons "Switch to shell buffer" :other-shell)))
                                       (mapcar (lambda (acp-session)
                                                 (cons (agent-shell--session-choice-label
                                                        :acp-session acp-session
@@ -4507,16 +4524,27 @@ Falls back to latest session in batch mode (e.g. tests)."
                                               (complete-with-action action candidates string pred)))
                                           nil t nil nil
                                           new-session-choice)))
-          (if (eq (map-elt session-choices selection) :other-shell)
-              (let ((other-shell (get-buffer
-                                  (completing-read "Choose a shell: "
-                                                   (mapcar #'buffer-name other-shells)
-                                                   nil t)))
-                    (bootstrapping-shell (map-elt (agent-shell--state) :buffer)))
-                (agent-shell--display-buffer other-shell)
-                (kill-buffer bootstrapping-shell)
-                :other-shell)
-            (map-elt session-choices selection)))))))
+          (pcase (map-elt session-choices selection)
+            (:other-shell
+             (let ((other-shell (get-buffer
+                                 (completing-read "Switch to shell buffer: "
+                                                  (mapcar #'buffer-name other-shells)
+                                                  nil t)))
+                   (bootstrapping-shell (map-elt (agent-shell--state) :buffer)))
+               (agent-shell--display-buffer other-shell)
+               (kill-buffer bootstrapping-shell)
+               :other-shell))
+            (:downloads-shell
+             (let ((config (map-elt (agent-shell--state) :agent-config)))
+               (kill-buffer (map-elt (agent-shell--state) :buffer))
+               (agent-shell-new-downloads-shell :config config))
+             :other-shell)
+            (:temp-shell
+             (let ((config (map-elt (agent-shell--state) :agent-config)))
+               (kill-buffer (map-elt (agent-shell--state) :buffer))
+               (agent-shell-new-temp-shell :config config))
+             :other-shell)
+            (choice choice)))))))
 
 
 (cl-defun agent-shell--session-from-response (&key acp-response acp-session-id)
@@ -5223,20 +5251,29 @@ Returns a buffer object or nil."
             (user-error "No agent shell buffers available for current project"))
         (if (and (eq agent-shell-session-strategy 'new-deferred)
                  (agent-shell-buffers))
-            (let* ((start-new "Start new shell")
-                   (open-existing "Open existing shell")
+            ;; TODO: Consolidate choices with `agent-shell--prompt-select-session'.
+            (let* ((start-new "New shell")
+                   (start-downloads "New Downloads shell")
+                   (start-temp "New temp shell")
+                   (open-existing "Switch to shell buffer")
                    (choice (completing-read "Start shell (default: new): "
-                                            (list start-new open-existing) nil t)))
-              (if (equal choice open-existing)
-                  (get-buffer (completing-read "Choose a shell: "
-                                               (mapcar #'buffer-name (agent-shell-buffers))
-                                               nil t))
+                                            (list start-new start-downloads start-temp open-existing) nil t)))
+              (cond
+               ((equal choice open-existing)
+                (get-buffer (completing-read "Switch to shell buffer: "
+                                             (mapcar #'buffer-name (agent-shell-buffers))
+                                             nil t)))
+               ((equal choice start-downloads)
+                (agent-shell-new-downloads-shell :no-display t))
+               ((equal choice start-temp)
+                (agent-shell-new-temp-shell :no-display t))
+               (t
                 (agent-shell--start :config (or (agent-shell--resolve-preferred-config)
                                                 (agent-shell-select-config
                                                  :prompt "Start new agent: ")
                                                 (error "No agent config found"))
                                     :no-focus t
-                                    :new-session t)))
+                                    :new-session t))))
           (agent-shell--start :config (or (agent-shell--resolve-preferred-config)
                                           (agent-shell-select-config
                                            :prompt "Start new agent: ")
