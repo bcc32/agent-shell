@@ -4853,45 +4853,52 @@ calling external symbols."
           (agent-shell--eval-dynamic-values (cdr obj))))
    (t obj)))
 
+(cl-defun agent-shell--make-mcp-server (&key overrides)
+  "Construct a normalized MCP server alist for JSON serialization.
+
+OVERRIDES is a user-supplied server alist whose values replace
+the schema defaults.  The transport type is inferred from the
+`type' key in OVERRIDES: \"http\" or \"sse\" selects the HTTP/SSE
+schema (name, type, url, headers); any other value selects the
+default stdio schema (name, command, args, env).
+
+Collection fields default to empty vectors so JSON serialization
+produces arrays.  List values in OVERRIDES are converted to
+vectors; keys not in the schema are appended to preserve any
+user-provided fields.
+
+Example:
+
+  (agent-shell--make-mcp-server
+   :overrides \\='((name . \"fs\") (command . \"npx\")))
+  => ((name . \"fs\") (command . \"npx\") (args . []) (env . []))"
+  (let ((normalized (if (member (map-elt overrides 'type) '("http" "sse"))
+                        (list (cons 'name nil)
+                              (cons 'type nil)
+                              (cons 'url nil)
+                              (cons 'headers []))
+                      (list (cons 'name nil)
+                            (cons 'command nil)
+                            (cons 'args [])
+                            (cons 'env [])))))
+    (map-do (lambda (key value)
+              (when (listp value)
+                (setq value (vconcat value)))
+              (if (map-contains-key normalized key)
+                  (map-put! normalized key value)
+                (setq normalized (append normalized (list (cons key value))))))
+            overrides)
+    normalized))
+
 (defun agent-shell--mcp-servers ()
   "Return normalized MCP servers configuration for JSON serialization.
 
-Converts list-valued `args', `env', and `headers' fields to vectors
-so they serialize properly to JSON arrays.  Returns a vector of
-normalized server configs."
+Each entry is normalized via `agent-shell--make-mcp-server'."
   (when agent-shell-mcp-servers
     (apply #'vector
            (mapcar (lambda (server)
-                     (setq server (agent-shell--eval-dynamic-values server))
-                     (let* ((normalized (copy-alist server))
-                            (transport-type (map-elt normalized 'type)))
-                       ;; ACP requires transport-specific collection fields,
-                       ;; but users often omit them in hand-written configs.
-                       ;; Default them to empty vectors before vectorizing any
-                       ;; provided list values so agents like Codex accept the
-                       ;; resulting payload.
-                       (when (and (assoc 'command normalized)
-                                  (not (member transport-type '("http" "sse"))))
-                         (unless (assoc 'args normalized)
-                           (setf (alist-get 'args normalized) []))
-                         (unless (assoc 'env normalized)
-                           (setf (alist-get 'env normalized) [])))
-                       (when (member transport-type '("http" "sse"))
-                         (unless (assoc 'headers normalized)
-                           (setf (alist-get 'headers normalized) [])))
-                       (when (assoc 'args normalized)
-                         (let ((args (map-elt normalized 'args)))
-                           (when (listp args)
-                             (setf (alist-get 'args normalized) (apply #'vector args)))))
-                       (when (assoc 'env normalized)
-                         (let ((env (map-elt normalized 'env)))
-                           (when (listp env)
-                             (setf (alist-get 'env normalized) (apply #'vector env)))))
-                       (when (assoc 'headers normalized)
-                         (let ((headers (map-elt normalized 'headers)))
-                           (when (listp headers)
-                             (setf (alist-get 'headers normalized) (apply #'vector headers)))))
-                       normalized))
+                     (agent-shell--make-mcp-server
+                      :overrides (agent-shell--eval-dynamic-values server)))
                    agent-shell-mcp-servers))))
 
 (cl-defun agent-shell--subscribe-to-client-events (&key state)
