@@ -797,8 +797,8 @@ when the cycle state hasn't been established yet."
                     ((not (member qid seen-ids))))
           (push qid seen-ids)
           (if (map-elt state :collapsed)
-              (cl-incf collapsed)
-            (cl-incf expanded)))
+              (setq collapsed (1+ collapsed))
+            (setq expanded (1+ expanded))))
         (goto-char (prop-match-end next)))
       (> collapsed expanded))))
 
