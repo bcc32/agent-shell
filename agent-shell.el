@@ -637,26 +637,26 @@ When non-nil (and supported by agent), prefer ACP session resumes over loading."
   :group 'agent-shell)
 
 (make-obsolete-variable 'agent-shell-prefer-session-resume
-                        'agent-shell-restore-context
+                        'agent-shell-session-restore-strategy
                         "agent-shell 0.52")
 
-(defcustom agent-shell-restore-context 'minimal
+(defcustom agent-shell-session-restore-strategy 'minimal
   "How much prior context to show when restoring a session.
 
   `minimal': Show only the session title (default).  Uses
              `session/resume' when supported (no message replay),
              so restore is fast and quiet.
-  `summary': Use `session/load' and, when the replay completes,
-             render the initial user prompt and the last agent
+  `first-last': Use `session/load', when the replay completes,
+             render the first user prompt and the last agent
              text response.  Other notifications (tool calls,
              thoughts) are suppressed during restore.
   `full':    Use `session/load' and replay the entire conversation.
 
-`summary' and `full' both require the agent to advertise
+`first-last' and `full' both require the agent to advertise
 `session/load' support.  When unavailable, restore falls back
 to `minimal' behavior."
   :type '(choice (const :tag "Title only (minimal)" minimal)
-                 (const :tag "First prompt + last response (summary)" summary)
+                 (const :tag "First prompt + last response (first-last)" first-last)
                  (const :tag "Full replay" full))
   :group 'agent-shell)
 
@@ -4823,16 +4823,16 @@ Falls back to latest session in batch mode (e.g. tests)."
 (defun agent-shell--use-session-load-p (state)
   "Return non-nil when STATE should restore via `session/load'.
 
-`agent-shell-restore-context' decides the protocol:
+`agent-shell-session-restore-strategy' decides the protocol:
 
-  `summary' and `full' force `session/load' when the agent
+  `first-last' and `full' force `session/load' when the agent
   advertises it (so a replay is available to read from); they
   fall back to `session/resume' otherwise.
 
   `minimal' uses `session/resume' when available, falling back
   to `session/load' only if the agent doesn't support resume."
   (cond
-   ((and (memq agent-shell-restore-context '(summary full))
+   ((and (memq agent-shell-session-restore-strategy '(first-last full))
          (map-elt state :supports-session-load))
     t)
    ((map-elt state :supports-session-resume)
@@ -4843,10 +4843,10 @@ Falls back to latest session in batch mode (e.g. tests)."
 (defun agent-shell--restore-summary-mode-p (state)
   "Return non-nil when STATE should accumulate a restore summary.
 
-Only true when `agent-shell-restore-context' is `summary' and the
+Only true when `agent-shell-session-restore-strategy' is `first-last' and the
 agent supports `session/load' (so a replay is available to read
 from)."
-  (and (eq agent-shell-restore-context 'summary)
+  (and (eq agent-shell-session-restore-strategy 'first-last)
        (map-elt state :supports-session-load)))
 
 (defun agent-shell--restore-summary-init (state)
@@ -4908,7 +4908,7 @@ boundary between consecutive same-kind chunks is preserved."
 (defun agent-shell--render-restore-summary (state)
   "Render the accumulated restore-summary fragments from STATE.
 
-Adds an `Initial prompt' fragment for the first user message and
+Adds an `First prompt' fragment for the first user message and
 a `Last response' fragment for the latest agent text reply, then
 clears the summary state.  Does nothing if neither was captured."
   (when-let ((summary (map-elt state :restore-summary)))
@@ -4918,7 +4918,7 @@ clears the summary state.  Does nothing if neither was captured."
        :state state
        :namespace-id "bootstrapping"
        :block-id "restore_summary_first_user"
-       :label-left (propertize "Initial prompt" 'font-lock-face 'font-lock-doc-markup-face)
+       :label-left (propertize "First prompt" 'font-lock-face 'font-lock-doc-markup-face)
        :body text
        :expanded t))
     (when-let ((text (map-elt summary :last-agent)))
