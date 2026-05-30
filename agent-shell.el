@@ -1163,6 +1163,8 @@ Returns nil if no icon should be displayed."
                               (cons (concat icon (when icon " ") display-name)
                                     config)))
                           configs))
+         (completion-extra-properties '(:category agent-shell-config))
+         (completion-styles (cons 'substring completion-styles))
          (selected-name (completing-read (or prompt "Select agent: ") choices nil t)))
     (map-elt choices selected-name)))
 
