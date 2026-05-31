@@ -697,6 +697,11 @@
                           (options . [((value . "code")
                                        (name . "Code"))]))]))
     (cl-letf (((symbol-function 'agent-shell--update-header-and-mode-line)
+               #'ignore)
+              ;; `--emit-event' calls `(agent-shell--state)' which errors
+              ;; outside of an `agent-shell-mode' buffer; the test exercises
+              ;; the data layer, not subscription dispatch.
+              ((symbol-function 'agent-shell--emit-event)
                #'ignore))
       (agent-shell--on-notification
        :state state
@@ -2674,6 +2679,29 @@ and it must handle that cleanly."
     (markdown-overlays-put)
     (let ((result (agent-shell--filter-buffer-substring (point-min) (point-max))))
       (should (equal result "Use foo-bar for that.")))))
+
+(ert-deftest agent-shell-trim-strips-untagged-whitespace ()
+  ;; Plain `string-trim'-style behavior when nothing is tagged: outer
+  ;; whitespace is removed.
+  (should (equal "hello"
+                 (agent-shell-trim "\n\n  hello  \n\n"))))
+
+(ert-deftest agent-shell-trim-preserves-tagged-whitespace ()
+  ;; A trailing `\\n' tagged with `agent-shell-non-trimmable'
+  ;; survives the trim — the renderer's panel padding (top/bottom
+  ;; vpad `\\n's around a source block) relies on this so the panel
+  ;; doesn't get clipped on the first / last block of a response.
+  (let* ((tail (propertize "\n" 'agent-shell-non-trimmable t))
+         (s (concat "\n\nhello\n" tail "\n\n")))
+    (should (equal "hello\n\n"
+                   (substring-no-properties
+                    (agent-shell-trim s))))))
+
+(ert-deftest agent-shell-trim-handles-edge-cases ()
+  ;; nil input, empty string, and all-whitespace strings.
+  (should (null (agent-shell-trim nil)))
+  (should (equal "" (agent-shell-trim "")))
+  (should (equal "" (agent-shell-trim "\n\n  \t  \n\n"))))
 
 (provide 'agent-shell-tests)
 ;;; agent-shell-tests.el ends here

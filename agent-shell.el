@@ -50,6 +50,7 @@
 (require 'map)
 (unless (require 'markdown-overlays nil 'noerror)
   (error "Please update 'shell-maker' to v0.91.2 or newer"))
+(require 'agent-shell-markdown)
 (require 'agent-shell-anthropic)
 (require 'agent-shell-auggie)
 (require 'agent-shell-codebuddy)
@@ -99,6 +100,7 @@
 ;; Declare as special so byte-compilation doesn't turn `let' bindings into
 ;; lexical bindings (which would not affect `auto-insert' behavior).
 (defvar auto-insert)
+
 
 (defcustom agent-shell-permission-icon "⚠"
   "Icon displayed when shell commands require permission to execute.
@@ -247,6 +249,67 @@ as we need a more efficient mechanism.
 See https://github.com/xenodium/agent-shell/issues/119"
   :type 'boolean
   :group 'agent-shell)
+
+(cl-defun agent-shell--markdown-overlays-put (&key render-images highlight-blocks)
+  "Deprecated overlay-based markdown renderer.
+
+Wraps `markdown-overlays-put' from the `markdown-overlays' package
+and translates agent-shell's renderer-agnostic config to the
+`markdown-overlays-*' variables it expects, so call sites don't
+need to know about the overlay package's variable names.
+RENDER-IMAGES toggles image rendering; HIGHLIGHT-BLOCKS toggles
+source-block highlighting.
+
+Deprecated in favour of `agent-shell-markdown-replace-markup' (the
+in-place renderer).  Kept as the current default for backwards
+compatibility; will be removed once the in-place renderer has
+settled and `markdown-overlays' is no longer a dependency."
+  (let ((markdown-overlays-render-images render-images)
+        (markdown-overlays-highlight-blocks highlight-blocks))
+    (markdown-overlays-put)))
+
+(defcustom agent-shell-markdown-render-function
+  #'agent-shell--markdown-overlays-put
+  "Function called to render markdown in the current narrowed buffer.
+
+The function accepts `&key render-images highlight-blocks' and is
+expected to render markdown in the current buffer.  Callers narrow
+the buffer to the target span (eg. a fragment body or label)
+before calling, so the function can scan the whole accessible
+portion.
+
+Two implementations ship with agent-shell:
+
+  - `agent-shell--markdown-overlays-put' (default, deprecated):
+    overlay-based renderer wrapping `markdown-overlays-put'.
+    Honors both keyword arguments via the corresponding
+    `markdown-overlays-*' variables.  Will be removed once the
+    in-place renderer has settled.
+
+  - `agent-shell-markdown-replace-markup': in-place renderer that
+    rewrites markup characters into propertized text (no
+    overlays).  Faster on streaming workloads but destroys the
+    source markdown in the buffer.  Currently always highlights
+    blocks and renders resolvable images; the keyword args are
+    accepted and ignored.
+
+Set to a custom function to plug in a different renderer; the
+function should accept `&key render-images highlight-blocks'."
+  :type 'function
+  :group 'agent-shell)
+
+(cl-defun agent-shell--render-markdown
+    (&key (render-images t) (highlight-blocks agent-shell-highlight-blocks))
+  "Render markdown in the current narrowed buffer.
+
+Dispatches to `agent-shell-markdown-render-function', forwarding
+RENDER-IMAGES and HIGHLIGHT-BLOCKS.  HIGHLIGHT-BLOCKS defaults to
+the current value of `agent-shell-highlight-blocks' so most call
+sites can omit it; RENDER-IMAGES defaults to t, override with nil
+on label spans where images shouldn't appear."
+  (funcall agent-shell-markdown-render-function
+           :render-images render-images
+           :highlight-blocks highlight-blocks))
 
 (defcustom agent-shell-confirm-interrupt t
   "Whether to prompt for confirmation before interrupting.
@@ -2359,6 +2422,13 @@ DIFF should be in the form returned by `agent-shell--make-diff-info':
                   (add-text-properties line-start line-end
                                        '(font-lock-face diff-hunk-header))))
                 (forward-line 1)))
+            ;; Tag the whole diff as already-rendered output so the
+            ;; markdown renderer's avoid-ranges include it — context
+            ;; lines like ` # Foo' or ` > Bar' must display verbatim,
+            ;; not as a header / blockquote.  See PR #597.
+            (add-text-properties (point-min) (point-max)
+                                 '(agent-shell-markdown-frozen t
+                                   rear-nonsticky (agent-shell-markdown-frozen)))
             (buffer-string)))
       (delete-file old-file)
       (delete-file new-file))))
@@ -3050,26 +3120,22 @@ by default, RENDER-BODY-IMAGES to enable inline image rendering in body."
                     (block-end (map-nested-elt range '(:block :end))))
           ;; Restore point after narrowing to prevent scrolling
           (save-excursion
-            ;; Apply markdown overlay to body.
+            ;; Apply markdown to body.
             (save-restriction
               (when-let ((body-start (map-nested-elt range '(:body :start)))
                          (body-end (map-nested-elt range '(:body :end))))
                 (narrow-to-region body-start body-end)
-                (let ((markdown-overlays-highlight-blocks agent-shell-highlight-blocks)
-                      (markdown-overlays-render-images render-body-images))
-                  (markdown-overlays-put))))
-            ;; Note: For now, we're skipping applying markdown overlays
+                (agent-shell--render-markdown :render-images render-body-images)))
+            ;; Note: For now, we're skipping applying markdown
             ;; on left labels as they currently carry propertized text
             ;; for statuses (ie. boxed).
             ;;
-            ;; Apply markdown overlay to right label.
+            ;; Apply markdown to right label.
             (save-restriction
               (when-let ((label-right-start (map-nested-elt range '(:label-right :start)))
                          (label-right-end (map-nested-elt range '(:label-right :end))))
                 (narrow-to-region label-right-start label-right-end)
-                (let ((markdown-overlays-highlight-blocks agent-shell-highlight-blocks)
-                      (markdown-overlays-render-images nil))
-                  (markdown-overlays-put)))))
+                (agent-shell--render-markdown :render-images nil))))
           (when auto-scroll
             (goto-char (point-max)))))))
   (with-current-buffer (map-elt state :buffer)
@@ -3109,26 +3175,28 @@ by default, RENDER-BODY-IMAGES to enable inline image rendering in body."
              ;; Marking as field to avoid false positives in
              ;; `agent-shell-next-item' and `agent-shell-previous-item'.
              (add-text-properties (or padding-start block-start)
-                                  (or padding-end block-end) '(field output)))
-           ;; Apply markdown overlay to body.
-           (when-let ((body-start (map-nested-elt range '(:body :start)))
-                      (body-end (map-nested-elt range '(:body :end))))
-             (narrow-to-region body-start body-end)
-             (let ((markdown-overlays-highlight-blocks agent-shell-highlight-blocks))
-               (markdown-overlays-put))
-             (widen))
-           ;;
-           ;; Note: For now, we're skipping applying markdown overlays
-           ;; on left labels as they currently carry propertized text
-           ;; for statuses (ie. boxed).
-           ;;
-           ;; Apply markdown overlay to right label.
-           (when-let ((label-right-start (map-nested-elt range '(:label-right :start)))
-                      (label-right-end (map-nested-elt range '(:label-right :end))))
-             (narrow-to-region label-right-start label-right-end)
-             (let ((markdown-overlays-highlight-blocks agent-shell-highlight-blocks))
-               (markdown-overlays-put))
-             (widen)))
+                                  (or padding-end block-end) '(field output))
+             ;; Apply markdown to body.  `inhibit-read-only' must
+             ;; wrap the render call too — chars in the body carry
+             ;; `read-only t' from `agent-shell-ui--insert-fragment',
+             ;; and `agent-shell-markdown' modifies buffer chars
+             ;; (unlike the overlay renderer which only adds overlays).
+             (when-let ((body-start (map-nested-elt range '(:body :start)))
+                        (body-end (map-nested-elt range '(:body :end))))
+               (narrow-to-region body-start body-end)
+               (agent-shell--render-markdown)
+               (widen))
+             ;;
+             ;; Note: For now, we're skipping applying markdown
+             ;; on left labels as they currently carry propertized text
+             ;; for statuses (ie. boxed).
+             ;;
+             ;; Apply markdown to right label.
+             (when-let ((label-right-start (map-nested-elt range '(:label-right :start)))
+                        (label-right-end (map-nested-elt range '(:label-right :end))))
+               (narrow-to-region label-right-start label-right-end)
+               (agent-shell--render-markdown)
+               (widen))))
          (run-hook-with-args 'agent-shell-section-functions range)))
       (unless auto-scroll
         (goto-char saved-point)
@@ -5321,13 +5389,30 @@ Returns a buffer object or nil."
     (with-current-buffer shell-buffer
       (goto-char comint-last-input-start))))
 
+(defun agent-shell--command-and-response-at-point ()
+  "Like `shell-maker--command-and-response-at-point' but preserves
+visual padding emitted by the markdown renderer inside fragments
+(e.g. source-block top/bottom vpad).  Delegates the raw extraction
+to shell-maker and runs the result through `agent-shell-trim'."
+  (when-let ((cell (shell-maker--command-and-response-at-point :trimmed nil)))
+    (cons (agent-shell-trim (car cell))
+          (agent-shell-trim (cdr cell)))))
+
+(defun agent-shell--next-command-and-response (&optional backwards)
+  "Like `shell-maker-next-command-and-response' but preserves
+visual padding inside fragments — see
+`agent-shell--command-and-response-at-point'."
+  (when-let ((cell (shell-maker-next-command-and-response backwards :trimmed nil)))
+    (cons (agent-shell-trim (car cell))
+          (agent-shell-trim (cdr cell)))))
+
 (defun agent-shell-interaction-at-point ()
   "Return the interaction at point in the shell buffer.
 Result is of the form ((:prompt . PROMPT) (:response . RESPONSE))."
   (when-let ((shell-buffer (agent-shell--shell-buffer))
              (result (with-current-buffer shell-buffer
-                       (or (shell-maker--command-and-response-at-point)
-                           (shell-maker-next-command-and-response t)))))
+                       (or (agent-shell--command-and-response-at-point)
+                           (agent-shell--next-command-and-response t)))))
     `((:prompt . ,(car result))
       (:response . ,(cdr result)))))
 
@@ -5438,8 +5523,7 @@ inserted into the shell buffer prompt."
 %s
 ```" (with-current-buffer output-buffer
        (buffer-string))))))
-                    (let ((markdown-overlays-highlight-blocks agent-shell-highlight-blocks))
-                      (markdown-overlays-put))
+                    (agent-shell--render-markdown)
                     (when (buffer-live-p output-buffer)
                       (kill-buffer output-buffer)))))))
     (set-process-query-on-exit-flag proc nil)
@@ -6175,9 +6259,7 @@ Returns an alist with insertion details or nil otherwise:
                 (insert text)
                 (setq insert-end (point))
                 (narrow-to-region insert-start insert-end)
-                (let ((markdown-overlays-highlight-blocks agent-shell-highlight-blocks)
-                      (markdown-overlays-render-images nil))
-                  (markdown-overlays-put))))
+                (agent-shell--render-markdown :render-images nil)))
             (when submit
               (shell-maker-submit)))
           `((:buffer . ,shell-buffer)
@@ -7431,6 +7513,41 @@ or select a specific request to remove."
                             (length (map-elt agent-shell--state :pending-requests))))
       (map-put! agent-shell--state :pending-requests nil)
       (message "Removed all pending requests"))))
+
+(defun agent-shell-trim (text)
+  "Strip surrounding whitespace from TEXT, preserving renderer padding.
+
+Like `string-trim', but whitespace chars carrying the
+`agent-shell-non-trimmable' text property are treated as
+intentional padding (e.g. the top/bottom vpad `\\n's the
+source-block renderer inserts inside a fragment body) and left
+alone.  A blind `string-trim' would consume those chars on the
+first / last block of a response and visibly clip the panel.
+
+For example:
+
+  (agent-shell-trim \"\\n\\n  hello  \\n\\n\")
+  => \"hello\"
+
+  (agent-shell-trim
+   (concat \"\\n\\nhello\\n\"
+           (propertize \"\\n\" \\='agent-shell-non-trimmable t)
+           \"\\n\\n\"))
+  => \"hello\\n\\n\"  ;; tagged trailing `\\n' preserved"
+  (and-let* ((text text)
+             (start 0)
+             (end (length text)))
+    (while (and (< start end)
+                (memq (seq-elt text start) '(?\s ?\t ?\n ?\r))
+                (not (get-text-property
+                      start 'agent-shell-non-trimmable text)))
+      (setq start (1+ start)))
+    (while (and (< start end)
+                (memq (seq-elt text (1- end)) '(?\s ?\t ?\n ?\r))
+                (not (get-text-property
+                      (1- end) 'agent-shell-non-trimmable text)))
+      (setq end (1- end)))
+    (substring text start end)))
 
 (provide 'agent-shell)
 
