@@ -1243,18 +1243,18 @@ Returns only suffixes whose function has a binding in KEYMAP."
 (defun agent-shell-viewport--update-header ()
   "Update header and mode line based on `agent-shell-header-style'.
 
-Automatically determines qualifier and bindings based on current major mode."
+Automatically determines position, status and bindings based on current
+major mode."
   (agent-shell-viewport--ensure-buffer)
   (let* ((pos (or (agent-shell-viewport--position)
                   (list (cons :current 1) (cons :total 1))))
-         (pos-label (format "%d/%d" (map-elt pos :current) (map-elt pos :total)))
-         (qualifier (cond
-                     ((agent-shell-viewport--busy-p)
-                      (format "[%s][Busy]" pos-label))
-                     ((derived-mode-p 'agent-shell-viewport-edit-mode)
-                      (format "[%s][Edit]" pos-label))
-                     ((derived-mode-p 'agent-shell-viewport-view-mode)
-                      (format "[%s][View]" pos-label))))
+         (position-label (format "%d/%d" (map-elt pos :current) (map-elt pos :total)))
+         (status (cond
+                  ((agent-shell-viewport--busy-p) (propertize "Busy" 'face 'warning))
+                  ((derived-mode-p 'agent-shell-viewport-edit-mode)
+                   (propertize "Edit" 'face 'success))
+                  ((derived-mode-p 'agent-shell-viewport-view-mode)
+                   (propertize "View" 'face 'default))))
          (bindings (cond
                     ((derived-mode-p 'agent-shell-viewport-edit-mode)
                      (list
@@ -1322,7 +1322,8 @@ Automatically determines qualifier and bindings based on current major mode."
     (when-let* ((shell-buffer (agent-shell-viewport--shell-buffer))
                 (header (with-current-buffer shell-buffer
                           (agent-shell--make-header (agent-shell--state)
-                                                    :qualifier qualifier
+                                                    :position position-label
+                                                    :status status
                                                     :bindings bindings
                                                     :model-binding model-binding
                                                     :mode-binding mode-binding

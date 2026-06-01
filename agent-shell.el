@@ -3394,22 +3394,41 @@ A buffer-local hash table mapping cache keys to header strings.")
               ((not (string-empty-p session-id))))
     (propertize session-id 'font-lock-face 'font-lock-constant-face)))
 
+(defun agent-shell--face-foreground (face)
+  "Return the foreground color for FACE, walking `:inherit' chains.
+FACE may be a face name symbol, an anonymous face plist (e.g. \\='(:foreground
+\"red\")), or a list of either.  Returns the color string or nil when
+unspecified."
+  (cond
+   ((null face) nil)
+   ((and (listp face) (keywordp (car face)))
+    (let ((val (plist-get face :foreground)))
+      (if (and (stringp val) (not (string= val "unspecified")))
+          val
+        (agent-shell--face-foreground (plist-get face :inherit)))))
+   ((listp face)
+    (seq-some #'agent-shell--face-foreground face))
+   ((symbolp face)
+    (let ((val (face-attribute face :foreground nil t)))
+      (when (stringp val) val)))))
+
 (defun agent-shell--svg-fill-color (face)
   "Return foreground color for FACE as an `#rrggbb' hex string for SVG.
-Resolves FACE's `:inherit' chain and merges with the `default' face
+Resolves FACE's `:inherit' chain and falls back to the `default' face
 so the result is always specified, then converts to hex.  The hex
 form is important because Emacs face foregrounds are often X11 color
 names (e.g., `Green3' for the standard `success' face) that SVG does
 not recognize — passing them through unconverted causes the renderer
 to fall back to black."
-  (let* ((name (face-attribute face :foreground nil 'default))
+  (let* ((name (or (agent-shell--face-foreground face)
+                   (face-attribute 'default :foreground)))
          (rgb (and (stringp name) (color-name-to-rgb name))))
     (if rgb
         (apply #'color-rgb-to-hex (append rgb '(2)))
       "#ffffff")))
 
-(cl-defun agent-shell--make-header-model (state &key qualifier bindings)
-  "Create a header model alist from STATE, QUALIFIER, and BINDINGS.
+(cl-defun agent-shell--make-header-model (state &key position status bindings)
+  "Create a header model alist from STATE, POSITION, STATUS, and BINDINGS.
 The model contains all inputs needed to render the graphical header."
   `((:buffer-name . ,(map-nested-elt state '(:agent-config :buffer-name)))
     (:icon-name . ,(map-nested-elt state '(:agent-config :icon-name)))
@@ -3433,7 +3452,8 @@ The model contains all inputs needed to render the graphical header."
     (:background-mode . ,(frame-parameter nil 'background-mode))
     (:context-indicator . ,(agent-shell--context-usage-indicator))
     (:busy-indicator-frame . ,(agent-shell--busy-indicator-frame))
-    (:qualifier . ,qualifier)
+    (:position . ,position)
+    (:status . ,status)
     (:bindings . ,bindings)))
 
 (defun agent-shell--header-cache-key (model)
@@ -3442,13 +3462,18 @@ Joins all values from the model alist."
   (mapconcat (lambda (pair) (format "%s" (cdr pair)))
              model "|"))
 
-(cl-defun agent-shell--make-header (state &key qualifier bindings model-binding mode-binding thought-level-binding)
+(cl-defun agent-shell--make-header (state &key position status bindings model-binding mode-binding thought-level-binding)
   "Return header text for current STATE.
 
 STATE should contain :agent-config with :icon-name, :buffer-name, and
 :session with :mode-id and :modes for displaying the current session mode.
 
-QUALIFIER: Any text to prefix BINDINGS row with.
+POSITION: Optional string rendered before the project on the bottom line
+(e.g. \"1/3\").  Honors text-property face for foreground color.
+
+STATUS: Optional string rendered at the end of the bottom line (e.g.
+propertize \"Edit\" with `success' face).  Honors text-property face for
+foreground color.
 
 BINDINGS is a list of alists defining key bindings to display, each with:
   :key         - Key string (e.g., \"n\")
@@ -3461,8 +3486,8 @@ menu command.
 When provided, included in help-echo tooltips."
   (unless state
     (error "STATE is required"))
-  (let* ((header-model (agent-shell--make-header-model state :qualifier qualifier :bindings bindings))
-         (text-header (format " %s%s%s%s @ %s%s%s%s"
+  (let* ((header-model (agent-shell--make-header-model state :position position :status status :bindings bindings))
+         (text-header (format " %s%s%s%s @ %s%s%s%s%s%s"
                               (propertize (map-elt header-model :buffer-name)
                                           'font-lock-face 'font-lock-variable-name-face)
                               (if (map-elt header-model :model-name)
@@ -3501,6 +3526,9 @@ When provided, included in help-echo tooltips."
                                                                                      (agent-shell--mode-line-mode-menu))
                                                                          map)))
                                 "")
+                              (if (map-elt header-model :position)
+                                  (concat (map-elt header-model :position) " ➤ ")
+                                "")
                               (propertize (map-elt header-model :project-name) 'font-lock-face 'font-lock-string-face)
                               (if (map-elt header-model :session-id)
                                   (concat " ➤ " (map-elt header-model :session-id))
@@ -3511,6 +3539,9 @@ When provided, included in help-echo tooltips."
                                 "")
                               (if (map-elt header-model :busy-indicator-frame)
                                   (map-elt header-model :busy-indicator-frame)
+                                "")
+                              (if (map-elt header-model :status)
+                                  (concat " ➤ " (map-elt header-model :status))
                                 ""))))
     (pcase agent-shell-header-style
       ((or 'none (pred null)) nil)
@@ -3521,7 +3552,7 @@ When provided, included in help-echo tooltips."
            ;; | icon | Top text line
            ;; |      | Bottom text line
            ;; +------+
-           ;; [Qualifier] Bindings row (optional, last row)
+           ;; Bindings row (optional, last row)
            (let* ((cache-key (agent-shell--header-cache-key header-model))
                   (cached (progn
                             (unless agent-shell--header-cache
@@ -3530,13 +3561,16 @@ When provided, included in help-echo tooltips."
              (or cached
                  (let* ((char-height (map-elt header-model :font-height))
                         (font-size (map-elt header-model :font-size))
-                        (has-bindings (or bindings qualifier))
+                        (has-bindings bindings)
                         (image-height (* 3 char-height))
                         (image-width image-height)
                         (text-height char-height)
                         (top-padding-height (/ font-size 2))
                         (bottom-padding-height (if has-bindings (+ text-height top-padding-height) top-padding-height))
-                        (row-spacing (if has-bindings font-size 0))
+                        ;; Match the natural inter-line stride between top and
+                        ;; bottom text rows so the bindings row sits the same
+                        ;; vertical distance below the bottom row.
+                        (row-spacing (if has-bindings (- char-height font-size) 0))
                         (total-height (+ image-height row-spacing top-padding-height bottom-padding-height))
                         ;; icon position
                         (icon-x 6)
@@ -3637,10 +3671,24 @@ When provided, included in help-echo tooltips."
                                                                `((x . ,icon-text-x)
                                                                  (y . ,(+ icon-text-y text-height (- char-height font-size)))
                                                                  (font-size . ,font-size)))))
+                                      ;; Position (optional, before project)
+                                      (when (map-elt header-model :position)
+                                        (dom-append-child text-node
+                                                          (dom-node 'tspan
+                                                                    `((fill . ,(agent-shell--svg-fill-color
+                                                                                (or (get-text-property 0 'face (map-elt header-model :position))
+                                                                                    'default))))
+                                                                    (substring-no-properties (map-elt header-model :position))))
+                                        (dom-append-child text-node
+                                                          (dom-node 'tspan
+                                                                    `((fill . ,(agent-shell--svg-fill-color 'default))
+                                                                      (dx . "8"))
+                                                                    "➤")))
                                       ;; Directory path
                                       (dom-append-child text-node
                                                         (dom-node 'tspan
-                                                                  `((fill . ,(agent-shell--svg-fill-color 'font-lock-string-face)))
+                                                                  `((fill . ,(agent-shell--svg-fill-color 'font-lock-string-face))
+                                                                    ,@(when (map-elt header-model :position) '((dx . "8"))))
                                                                   (map-elt header-model :project-name)))
                                       ;; Session ID (optional)
                                       (when (map-elt header-model :session-id)
@@ -3656,21 +3704,28 @@ When provided, included in help-echo tooltips."
                                                                     `((fill . ,(agent-shell--svg-fill-color 'font-lock-constant-face))
                                                                       (dx . "8"))
                                                                     (substring-no-properties (map-elt header-model :session-id)))))
+                                      ;; Status (optional, end of line)
+                                      (when (map-elt header-model :status)
+                                        (dom-append-child text-node
+                                                          (dom-node 'tspan
+                                                                    `((fill . ,(agent-shell--svg-fill-color 'default))
+                                                                      (dx . "8"))
+                                                                    "➤"))
+                                        (dom-append-child text-node
+                                                          (dom-node 'tspan
+                                                                    `((fill . ,(agent-shell--svg-fill-color
+                                                                                (or (get-text-property 0 'face (map-elt header-model :status))
+                                                                                    'default)))
+                                                                      (dx . "8"))
+                                                                    (substring-no-properties (map-elt header-model :status)))))
                                       text-node))
-                   ;; Bindings row (last row if bindings or qualifier present)
-                   (when (or bindings qualifier)
+                   ;; Bindings row (last row if bindings present)
+                   (when bindings
                      (svg--append svg (let ((text-node (dom-node 'text
                                                                  `((x . ,bindings-x)
                                                                    (y . ,bindings-y)
                                                                    (font-size . ,font-size))))
                                             (first t))
-                                        ;; Add qualifier if present
-                                        (when qualifier
-                                          (dom-append-child text-node
-                                                            (dom-node 'tspan
-                                                                      `((fill . ,(agent-shell--svg-fill-color 'default)))
-                                                                      qualifier))
-                                          (setq first nil))
                                         (dolist (binding bindings)
                                           (when (map-elt binding :description)
                                             ;; Add key (XML-escape angle brackets)
@@ -3687,7 +3742,7 @@ When provided, included in help-echo tooltips."
                                             ;; Add space and description
                                             (dom-append-child text-node
                                                               (dom-node 'tspan
-                                                                        `((fill . ,(agent-shell--svg-fill-color 'default))
+                                                                        `((fill . ,(agent-shell--svg-fill-color 'font-lock-comment-face))
                                                                           (dx . "8"))
                                                                         (map-elt binding :description)))))
                                         text-node)))

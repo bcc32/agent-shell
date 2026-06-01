@@ -2203,6 +2203,38 @@ code block content
           (should-not (string-match-p "test-session-id"
                                       (substring-no-properties header))))))))
 
+(ert-deftest agent-shell--make-header-graphical-status-fg-test ()
+  "Test graphical header honors a propertized `:status' foreground."
+  (skip-unless (image-type-available-p 'svg))
+  (with-temp-buffer
+    (setq-local agent-shell--state
+                `((:agent-config . ((:buffer-name . "Test")
+                                    (:icon-name . nil)))
+                  (:session . ((:id . "abc")
+                               (:model-id . nil)
+                               (:models . nil)
+                               (:mode-id . nil)
+                               (:modes . nil)))))
+    (cl-letf (((symbol-function 'agent-shell--state)
+               (lambda () agent-shell--state))
+              ((symbol-function 'agent-shell--context-usage-indicator)
+               (lambda () nil))
+              ((symbol-function 'agent-shell--busy-indicator-frame)
+               (lambda () nil))
+              ((symbol-function 'agent-shell--session-id-indicator)
+               (lambda () nil)))
+      (let* ((agent-shell-header-style 'graphical)
+             (agent-shell--header-cache nil)
+             (header (agent-shell--make-header
+                      agent-shell--state
+                      :position "1/3"
+                      :status (propertize "Edit" 'face '(:foreground "#00ff00"))))
+             (svg-data (plist-get (cdr (get-text-property 1 'display header))
+                                  :data)))
+        (should (string-match-p ">1/3</tspan>" svg-data))
+        (should (string-match-p "<tspan[^>]*fill=\"#00ff00\"[^>]*>Edit"
+                                svg-data))))))
+
 ;;; Tests for agent-shell--dot-subdir-in-repo
 
 (ert-deftest agent-shell--dot-subdir-in-repo-returns-path-test ()
