@@ -930,7 +930,8 @@ always go to Evil modes if you need to with ~C-z~).
 |                 | agent-shell-ui-backward-block                           | Jump to the previous block.                                                   |
 |                 | agent-shell-ui-forward-block                            | Jump to the next block.                                                       |
 |                 | agent-shell-ui-mode                                     | Minor mode for SUI block navigation.                                          |
-|                 | agent-shell-ui-toggle-fragment-at-point                 | Toggle visibility of fragment body at point.                                  |
+|                 | agent-shell-ui-toggle-fragment                          | Toggle fragment fold at or near point.                                        |
+|                 | agent-shell-ui-toggle-all-fragments                     | Toggle global fold state: all-expanded ↔ all-collapsed.                       |
 |                 | agent-shell-version                                     | Show `agent-shell' mode version.                                              |
 |                 | agent-shell-view-acp-logs                               | View agent shell ACP logs buffer.                                             |
 |                 | agent-shell-view-traffic                                | View agent shell traffic buffer.                                              |

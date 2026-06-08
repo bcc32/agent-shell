@@ -365,7 +365,7 @@ are preserved across label updates."
                    new-text
                    (lambda ()
                      (interactive)
-                     (agent-shell-ui-toggle-fragment-at-point))
+                     (agent-shell-ui--toggle-fragment-at-point))
                    (lambda ()
                      (message "Press RET to toggle"))))
           (let ((insert-end (point)))
@@ -470,7 +470,7 @@ NAVIGATION controls navigability:
                      (if expanded "▼ " "▶ ")
                      (lambda ()
                        (interactive)
-                       (agent-shell-ui-toggle-fragment-at-point))
+                       (agent-shell-ui--toggle-fragment-at-point))
                      (lambda ()
                        (message "Press RET to toggle"))))
             (setq indicator-end (point))
@@ -479,7 +479,7 @@ NAVIGATION controls navigability:
                                                           keymap ,(agent-shell-ui-make-action-keymap
                                                                    (lambda ()
                                                                      (interactive)
-                                                                     (agent-shell-ui-toggle-fragment-at-point)))
+                                                                     (agent-shell-ui--toggle-fragment-at-point)))
                                                           read-only t
                                                           front-sticky (read-only))))
         (setq collapsable nil)
@@ -504,7 +504,7 @@ NAVIGATION controls navigability:
                label-left
                (lambda ()
                  (interactive)
-                 (agent-shell-ui-toggle-fragment-at-point))
+                 (agent-shell-ui--toggle-fragment-at-point))
                (lambda ()
                  (message "Press RET to toggle"))))
       (setq label-left-end (point))
@@ -523,7 +523,7 @@ NAVIGATION controls navigability:
                label-right
                (lambda ()
                  (interactive)
-                 (agent-shell-ui-toggle-fragment-at-point))
+                 (agent-shell-ui--toggle-fragment-at-point))
                (lambda ()
                  (message "Press RET to toggle"))))
       (setq label-right-end (point))
@@ -664,9 +664,11 @@ When NO-UNDO is non-nil, disable undo recording."
         (skip-chars-backward "\n")
         (make-string (max 0 (- desired (- pos (point)))) ?\n)))))
 
-(defun agent-shell-ui-toggle-fragment-at-point ()
-  "Toggle visibility of fragment body at point."
-  (interactive)
+(defun agent-shell-ui--toggle-fragment-at-point ()
+  "Toggle visibility of fragment body at point.
+Internal primitive — callers must position point on the fragment's
+state-property range first.  User-facing toggling goes through
+`agent-shell-ui-toggle-fragment'."
   (save-mark-and-excursion
     (when-let* ((inhibit-read-only t)
                 (buffer-undo-list t)
@@ -724,12 +726,12 @@ When NO-UNDO is non-nil, disable undo recording."
              (lambda (_ state)
                (equal (map-elt state :qualified-id) qualified-id))
              t)
-        (agent-shell-ui-toggle-fragment-at-point)))))
+        (agent-shell-ui--toggle-fragment-at-point)))))
 
-(defvar-local agent-shell-ui--fold-cycle-state nil
-  "Current global fold cycle state for the buffer.
+(defvar-local agent-shell-ui--fold-toggle-state nil
+  "Current global fold state for the buffer.
 One of `expanded', `collapsed', or nil (first call — derive from buffer).
-Used by `agent-shell-ui-cycle-all-fragments' to alternate.")
+Used by `agent-shell-ui-toggle-all-fragments' to alternate.")
 
 (defun agent-shell-ui--enclosing-fragment-position ()
   "Return position of the nearest enclosing fragment, or nil.
@@ -757,7 +759,7 @@ block range contains point, then forward as a fallback."
                                 t)))
               (prop-match-beginning match)))))))
 
-(defun agent-shell-ui-toggle-fragment-dwim ()
+(defun agent-shell-ui-toggle-fragment ()
   "Toggle fragment fold at or near point.
 
 If point is on a fragment, toggle that fragment.  If point is inside a
@@ -766,8 +768,7 @@ to the next fragment forward and toggle it.
 
 After toggling, point returns to its starting position when the action
 target was the enclosing fragment; otherwise point moves to the toggled
-fragment.  Silent no-op when no fragment exists at or after point —
-matches `agent-shell-ui-toggle-fragment-at-point' convention."
+fragment.  Silent no-op when no fragment exists at or after point."
   (interactive)
   (when-let* ((origin (point))
               (target (agent-shell-ui--enclosing-fragment-position)))
@@ -777,7 +778,7 @@ matches `agent-shell-ui-toggle-fragment-at-point' convention."
                                :qualified-id))
            (origin-was-inside (and origin-id (equal origin-id target-id))))
       (goto-char target)
-      (agent-shell-ui-toggle-fragment-at-point)
+      (agent-shell-ui--toggle-fragment-at-point)
       (when origin-was-inside
         (when-let* ((block (agent-shell-ui--block-range :position target))
                     (max-pos (map-elt block :end)))
@@ -785,8 +786,8 @@ matches `agent-shell-ui-toggle-fragment-at-point' convention."
 
 (defun agent-shell-ui--majority-collapsed-p ()
   "Return non-nil when most navigatable fragments in the buffer are collapsed.
-Used by `agent-shell-ui-cycle-all-fragments' on its first invocation
-when the cycle state hasn't been established yet."
+Used by `agent-shell-ui-toggle-all-fragments' on its first invocation
+when the toggle state hasn't been established yet."
   (save-mark-and-excursion
     (goto-char (point-min))
     ;; Dedup: text-property-search may visit the same qualified-id
@@ -811,8 +812,8 @@ when the cycle state hasn't been established yet."
         (goto-char (prop-match-end next)))
       (> collapsed expanded))))
 
-(defun agent-shell-ui-cycle-all-fragments ()
-  "Cycle global fold state: all-expanded ↔ all-collapsed.
+(defun agent-shell-ui-toggle-all-fragments ()
+  "Toggle global fold state: all-expanded ↔ all-collapsed.
 
 Iterates over every navigatable fragment in the buffer.  When the
 current global state is `expanded', all fragments are collapsed and
@@ -826,7 +827,7 @@ Fragments whose `:navigatable' flag is nil (e.g. inline message chunks)
 are skipped — they have no fold indicator to act on."
   (interactive)
   (let* ((target-collapsed
-          (pcase agent-shell-ui--fold-cycle-state
+          (pcase agent-shell-ui--fold-toggle-state
             ('expanded t)
             ('collapsed nil)
             (_ (not (agent-shell-ui--majority-collapsed-p)))))
@@ -849,9 +850,9 @@ are skipped — they have no fold indicator to act on."
             (push qid seen-ids)
             (when (eq (map-elt state :collapsed) (not target-collapsed))
               (goto-char start)
-              (agent-shell-ui-toggle-fragment-at-point)))
+              (agent-shell-ui--toggle-fragment-at-point)))
           (goto-char (prop-match-end next)))))
-    (setq agent-shell-ui--fold-cycle-state
+    (setq agent-shell-ui--fold-toggle-state
           (if target-collapsed 'collapsed 'expanded))
     (goto-char origin)))
 
@@ -978,7 +979,7 @@ BEG and END define the match region."
           (unless (member qualified-id agent-shell-ui--isearch-opened-fragments)
             (push qualified-id agent-shell-ui--isearch-opened-fragments))
           ;; Expand the fragment
-          (agent-shell-ui-toggle-fragment-at-point))))
+          (agent-shell-ui--toggle-fragment-at-point))))
 
     ;; Always return t to include the match
     t))

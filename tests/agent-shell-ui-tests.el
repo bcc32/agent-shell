@@ -131,10 +131,10 @@ Returns the buffer.  Caller must kill it."
           (should (agent-shell-ui--majority-collapsed-p)))
       (kill-buffer buf))))
 
-;;; cycle-all-fragments
+;;; toggle-all-fragments
 
-(ert-deftest agent-shell-ui-cycle-all-collapses-expanded-test ()
-  "Cycling when all expanded collapses everything."
+(ert-deftest agent-shell-ui-toggle-all-collapses-expanded-test ()
+  "Toggling when all expanded collapses everything."
   (let ((buf (agent-shell-ui-tests--make-buffer-with-fragments
               '(((:namespace-id . "ns") (:block-id . "1")
                  (:label-left . "A") (:body . "body a") (:expanded . t))
@@ -142,14 +142,14 @@ Returns the buffer.  Caller must kill it."
                  (:label-left . "B") (:body . "body b") (:expanded . t))))))
     (unwind-protect
         (with-current-buffer buf
-          (agent-shell-ui-cycle-all-fragments)
+          (agent-shell-ui-toggle-all-fragments)
           (should (agent-shell-ui-tests--fragment-collapsed-p "ns" "1"))
           (should (agent-shell-ui-tests--fragment-collapsed-p "ns" "2"))
-          (should (eq agent-shell-ui--fold-cycle-state 'collapsed)))
+          (should (eq agent-shell-ui--fold-toggle-state 'collapsed)))
       (kill-buffer buf))))
 
-(ert-deftest agent-shell-ui-cycle-all-expands-collapsed-test ()
-  "Cycling when all collapsed expands everything."
+(ert-deftest agent-shell-ui-toggle-all-expands-collapsed-test ()
+  "Toggling when all collapsed expands everything."
   (let ((buf (agent-shell-ui-tests--make-buffer-with-fragments
               '(((:namespace-id . "ns") (:block-id . "1")
                  (:label-left . "A") (:body . "body a"))
@@ -157,14 +157,14 @@ Returns the buffer.  Caller must kill it."
                  (:label-left . "B") (:body . "body b"))))))
     (unwind-protect
         (with-current-buffer buf
-          (agent-shell-ui-cycle-all-fragments)
+          (agent-shell-ui-toggle-all-fragments)
           (should-not (agent-shell-ui-tests--fragment-collapsed-p "ns" "1"))
           (should-not (agent-shell-ui-tests--fragment-collapsed-p "ns" "2"))
-          (should (eq agent-shell-ui--fold-cycle-state 'expanded)))
+          (should (eq agent-shell-ui--fold-toggle-state 'expanded)))
       (kill-buffer buf))))
 
-(ert-deftest agent-shell-ui-cycle-all-round-trip-test ()
-  "Cycling twice returns to original state."
+(ert-deftest agent-shell-ui-toggle-all-round-trip-test ()
+  "Toggling twice returns to original state."
   (let ((buf (agent-shell-ui-tests--make-buffer-with-fragments
               '(((:namespace-id . "ns") (:block-id . "1")
                  (:label-left . "A") (:body . "body a") (:expanded . t))
@@ -172,11 +172,11 @@ Returns the buffer.  Caller must kill it."
                  (:label-left . "B") (:body . "body b") (:expanded . t))))))
     (unwind-protect
         (with-current-buffer buf
-          ;; First cycle: collapse all
-          (agent-shell-ui-cycle-all-fragments)
+          ;; First toggle: collapse all
+          (agent-shell-ui-toggle-all-fragments)
           (should (agent-shell-ui-tests--fragment-collapsed-p "ns" "1"))
-          ;; Second cycle: expand all
-          (agent-shell-ui-cycle-all-fragments)
+          ;; Second toggle: expand all
+          (agent-shell-ui-toggle-all-fragments)
           (should-not (agent-shell-ui-tests--fragment-collapsed-p "ns" "1"))
           (should-not (agent-shell-ui-tests--fragment-collapsed-p "ns" "2")))
       (kill-buffer buf))))
@@ -212,10 +212,10 @@ Returns the buffer.  Caller must kill it."
           (should-not (agent-shell-ui--enclosing-fragment-position)))
       (kill-buffer buf))))
 
-;;; toggle-fragment-dwim
+;;; toggle-fragment
 
-(ert-deftest agent-shell-ui-toggle-dwim-on-fragment-test ()
-  "DWIM toggle on a fragment toggles it."
+(ert-deftest agent-shell-ui-toggle-fragment-on-fragment-test ()
+  "Toggle on a fragment toggles it."
   (let ((buf (agent-shell-ui-tests--make-buffer-with-fragments
               '(((:namespace-id . "ns") (:block-id . "1")
                  (:label-left . "A") (:body . "body a") (:expanded . t))))))
@@ -230,17 +230,17 @@ Returns the buffer.  Caller must kill it."
                         (text-property-search-backward
                          'agent-shell-ui-state nil
                          (lambda (_ s) (and s t)) t))))
-          ;; Fragment starts expanded, DWIM should collapse it
-          (agent-shell-ui-toggle-fragment-dwim)
+          ;; Fragment starts expanded, toggle should collapse it
+          (agent-shell-ui-toggle-fragment)
           (should (agent-shell-ui-tests--fragment-collapsed-p "ns" "1")))
       (kill-buffer buf))))
 
 (ert-deftest agent-shell-ui-toggle-survives-surgical-replace-test ()
-  "DWIM toggle target stays consistent after `--surgical-replace-body'.
+  "Toggle target stays consistent after `--surgical-replace-body'.
 
 Surgical replace mints a fresh state plist on the new body chars
-but `:qualified-id` is stable.  DWIM resolves the target via
-`:qualified-id` so the toggle still hits the right fragment."
+but `:qualified-id` is stable.  Toggle resolves the target via
+`:qualified-id` so it still hits the right fragment."
   (let ((buf (agent-shell-ui-tests--make-buffer-with-fragments
               '(((:namespace-id . "ns") (:block-id . "1")
                  (:label-left . "Tool") (:body . "initial")
@@ -260,7 +260,7 @@ but `:qualified-id` is stable.  DWIM resolves the target via
                         (text-property-search-backward
                          'agent-shell-ui-state nil
                          (lambda (_ s) (and s t)) t))))
-          (agent-shell-ui-toggle-fragment-dwim)
+          (agent-shell-ui-toggle-fragment)
           (should (agent-shell-ui-tests--fragment-collapsed-p "ns" "1")))
       (kill-buffer buf))))
 
