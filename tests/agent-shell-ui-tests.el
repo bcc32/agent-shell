@@ -37,6 +37,235 @@
       (should (equal "  " (get-text-property i 'line-prefix out)))
       (should (equal "  " (get-text-property i 'wrap-prefix out))))))
 
+
+(defun agent-shell-ui-tests--make-buffer-with-fragments (fragments)
+  "Create a temp buffer with FRAGMENTS inserted.
+
+FRAGMENTS is a list of alists, each with keys :namespace-id,
+:block-id, :label-left, :body, and optionally :expanded.
+
+Example:
+
+  (agent-shell-ui-tests--make-buffer-with-fragments
+   \\='(((:namespace-id . \"ns\") (:block-id . \"1\")
+      (:label-left . \"First\") (:body . \"body one\")
+      (:expanded . t))
+     ((:namespace-id . \"ns\") (:block-id . \"2\")
+      (:label-left . \"Second\") (:body . \"body two\"))))
+
+Returns the buffer.  Caller must kill it."
+  (let ((buf (generate-new-buffer " *test-ui-fragments*")))
+    (with-current-buffer buf
+      (agent-shell-ui-mode 1)
+      (dolist (frag fragments)
+        (agent-shell-ui-update-fragment
+         (agent-shell-ui-make-fragment-model
+          :namespace-id (map-elt frag :namespace-id)
+          :block-id (map-elt frag :block-id)
+          :label-left (map-elt frag :label-left)
+          :label-right (map-elt frag :label-right)
+          :body (map-elt frag :body))
+         :expanded (map-elt frag :expanded)
+         :navigation 'always)))
+    buf))
+
+(defun agent-shell-ui-tests--fragment-collapsed-p (namespace-id block-id)
+  "Return non-nil when fragment NAMESPACE-ID/BLOCK-ID is collapsed."
+  (let ((qualified-id (format "%s-%s" namespace-id block-id)))
+    (save-mark-and-excursion
+      (goto-char (point-min))
+      (when-let* ((match (text-property-search-forward
+                         'agent-shell-ui-state nil
+                         (lambda (_ state)
+                           (equal (map-elt state :qualified-id) qualified-id))
+                         t)))
+        (map-elt (get-text-property (prop-match-beginning match)
+                                    'agent-shell-ui-state)
+                 :collapsed)))))
+
+;;; majority-collapsed-p
+
+(ert-deftest agent-shell-ui-majority-collapsed-all-collapsed-test ()
+  "All collapsed fragments yields non-nil."
+  (let ((buf (agent-shell-ui-tests--make-buffer-with-fragments
+              '(((:namespace-id . "ns") (:block-id . "1")
+                 (:label-left . "A") (:body . "body a"))
+                ((:namespace-id . "ns") (:block-id . "2")
+                 (:label-left . "B") (:body . "body b"))
+                ((:namespace-id . "ns") (:block-id . "3")
+                 (:label-left . "C") (:body . "body c"))))))
+    (unwind-protect
+        (with-current-buffer buf
+          (should (agent-shell-ui--majority-collapsed-p)))
+      (kill-buffer buf))))
+
+(ert-deftest agent-shell-ui-majority-collapsed-all-expanded-test ()
+  "All expanded fragments yields nil."
+  (let ((buf (agent-shell-ui-tests--make-buffer-with-fragments
+              '(((:namespace-id . "ns") (:block-id . "1")
+                 (:label-left . "A") (:body . "body a") (:expanded . t))
+                ((:namespace-id . "ns") (:block-id . "2")
+                 (:label-left . "B") (:body . "body b") (:expanded . t))
+                ((:namespace-id . "ns") (:block-id . "3")
+                 (:label-left . "C") (:body . "body c") (:expanded . t))))))
+    (unwind-protect
+        (with-current-buffer buf
+          (should-not (agent-shell-ui--majority-collapsed-p)))
+      (kill-buffer buf))))
+
+(ert-deftest agent-shell-ui-majority-collapsed-mixed-test ()
+  "Three collapsed, two expanded yields non-nil."
+  (let ((buf (agent-shell-ui-tests--make-buffer-with-fragments
+              '(((:namespace-id . "ns") (:block-id . "1")
+                 (:label-left . "A") (:body . "body a"))
+                ((:namespace-id . "ns") (:block-id . "2")
+                 (:label-left . "B") (:body . "body b") (:expanded . t))
+                ((:namespace-id . "ns") (:block-id . "3")
+                 (:label-left . "C") (:body . "body c"))
+                ((:namespace-id . "ns") (:block-id . "4")
+                 (:label-left . "D") (:body . "body d") (:expanded . t))
+                ((:namespace-id . "ns") (:block-id . "5")
+                 (:label-left . "E") (:body . "body e"))))))
+    (unwind-protect
+        (with-current-buffer buf
+          (should (agent-shell-ui--majority-collapsed-p)))
+      (kill-buffer buf))))
+
+;;; cycle-all-fragments
+
+(ert-deftest agent-shell-ui-cycle-all-collapses-expanded-test ()
+  "Cycling when all expanded collapses everything."
+  (let ((buf (agent-shell-ui-tests--make-buffer-with-fragments
+              '(((:namespace-id . "ns") (:block-id . "1")
+                 (:label-left . "A") (:body . "body a") (:expanded . t))
+                ((:namespace-id . "ns") (:block-id . "2")
+                 (:label-left . "B") (:body . "body b") (:expanded . t))))))
+    (unwind-protect
+        (with-current-buffer buf
+          (agent-shell-ui-cycle-all-fragments)
+          (should (agent-shell-ui-tests--fragment-collapsed-p "ns" "1"))
+          (should (agent-shell-ui-tests--fragment-collapsed-p "ns" "2"))
+          (should (eq agent-shell-ui--fold-cycle-state 'collapsed)))
+      (kill-buffer buf))))
+
+(ert-deftest agent-shell-ui-cycle-all-expands-collapsed-test ()
+  "Cycling when all collapsed expands everything."
+  (let ((buf (agent-shell-ui-tests--make-buffer-with-fragments
+              '(((:namespace-id . "ns") (:block-id . "1")
+                 (:label-left . "A") (:body . "body a"))
+                ((:namespace-id . "ns") (:block-id . "2")
+                 (:label-left . "B") (:body . "body b"))))))
+    (unwind-protect
+        (with-current-buffer buf
+          (agent-shell-ui-cycle-all-fragments)
+          (should-not (agent-shell-ui-tests--fragment-collapsed-p "ns" "1"))
+          (should-not (agent-shell-ui-tests--fragment-collapsed-p "ns" "2"))
+          (should (eq agent-shell-ui--fold-cycle-state 'expanded)))
+      (kill-buffer buf))))
+
+(ert-deftest agent-shell-ui-cycle-all-round-trip-test ()
+  "Cycling twice returns to original state."
+  (let ((buf (agent-shell-ui-tests--make-buffer-with-fragments
+              '(((:namespace-id . "ns") (:block-id . "1")
+                 (:label-left . "A") (:body . "body a") (:expanded . t))
+                ((:namespace-id . "ns") (:block-id . "2")
+                 (:label-left . "B") (:body . "body b") (:expanded . t))))))
+    (unwind-protect
+        (with-current-buffer buf
+          ;; First cycle: collapse all
+          (agent-shell-ui-cycle-all-fragments)
+          (should (agent-shell-ui-tests--fragment-collapsed-p "ns" "1"))
+          ;; Second cycle: expand all
+          (agent-shell-ui-cycle-all-fragments)
+          (should-not (agent-shell-ui-tests--fragment-collapsed-p "ns" "1"))
+          (should-not (agent-shell-ui-tests--fragment-collapsed-p "ns" "2")))
+      (kill-buffer buf))))
+
+;;; enclosing-fragment-position
+
+(ert-deftest agent-shell-ui-enclosing-position-on-fragment-test ()
+  "When point is on a fragment, return point."
+  (let ((buf (agent-shell-ui-tests--make-buffer-with-fragments
+              '(((:namespace-id . "ns") (:block-id . "1")
+                 (:label-left . "A") (:body . "body a") (:expanded . t))))))
+    (unwind-protect
+        (with-current-buffer buf
+          ;; Move to a position that has agent-shell-ui-state
+          (goto-char (point-min))
+          (text-property-search-forward 'agent-shell-ui-state nil
+                                        (lambda (_ s) (and s t)) t)
+          (goto-char (prop-match-beginning
+                      (save-mark-and-excursion
+                        (text-property-search-backward
+                         'agent-shell-ui-state nil
+                         (lambda (_ s) (and s t)) t))))
+          (should (equal (agent-shell-ui--enclosing-fragment-position)
+                         (point))))
+      (kill-buffer buf))))
+
+(ert-deftest agent-shell-ui-enclosing-position-nil-in-empty-buffer-test ()
+  "Empty buffer returns nil."
+  (let ((buf (generate-new-buffer " *test-ui-empty*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (agent-shell-ui-mode 1)
+          (should-not (agent-shell-ui--enclosing-fragment-position)))
+      (kill-buffer buf))))
+
+;;; toggle-fragment-dwim
+
+(ert-deftest agent-shell-ui-toggle-dwim-on-fragment-test ()
+  "DWIM toggle on a fragment toggles it."
+  (let ((buf (agent-shell-ui-tests--make-buffer-with-fragments
+              '(((:namespace-id . "ns") (:block-id . "1")
+                 (:label-left . "A") (:body . "body a") (:expanded . t))))))
+    (unwind-protect
+        (with-current-buffer buf
+          ;; Position on the fragment
+          (goto-char (point-min))
+          (text-property-search-forward 'agent-shell-ui-state nil
+                                        (lambda (_ s) (and s t)) t)
+          (goto-char (prop-match-beginning
+                      (save-mark-and-excursion
+                        (text-property-search-backward
+                         'agent-shell-ui-state nil
+                         (lambda (_ s) (and s t)) t))))
+          ;; Fragment starts expanded, DWIM should collapse it
+          (agent-shell-ui-toggle-fragment-dwim)
+          (should (agent-shell-ui-tests--fragment-collapsed-p "ns" "1")))
+      (kill-buffer buf))))
+
+(ert-deftest agent-shell-ui-toggle-survives-surgical-replace-test ()
+  "DWIM toggle target stays consistent after `--surgical-replace-body'.
+
+Surgical replace mints a fresh state plist on the new body chars
+but `:qualified-id` is stable.  DWIM resolves the target via
+`:qualified-id` so the toggle still hits the right fragment."
+  (let ((buf (agent-shell-ui-tests--make-buffer-with-fragments
+              '(((:namespace-id . "ns") (:block-id . "1")
+                 (:label-left . "Tool") (:body . "initial")
+                 (:expanded . t))))))
+    (unwind-protect
+        (with-current-buffer buf
+          (agent-shell-ui-update-fragment
+           (agent-shell-ui-make-fragment-model
+            :namespace-id "ns" :block-id "1"
+            :body "replaced body content")
+           :append nil :navigation 'always)
+          (goto-char (point-min))
+          (text-property-search-forward 'agent-shell-ui-state nil
+                                        (lambda (_ s) (and s t)) t)
+          (goto-char (prop-match-beginning
+                      (save-mark-and-excursion
+                        (text-property-search-backward
+                         'agent-shell-ui-state nil
+                         (lambda (_ s) (and s t)) t))))
+          (agent-shell-ui-toggle-fragment-dwim)
+          (should (agent-shell-ui-tests--fragment-collapsed-p "ns" "1")))
+      (kill-buffer buf))))
+
+;;; provide
+
 (provide 'agent-shell-ui-tests)
 
 ;;; agent-shell-ui-tests.el ends here

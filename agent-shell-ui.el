@@ -726,6 +726,135 @@ When NO-UNDO is non-nil, disable undo recording."
              t)
         (agent-shell-ui-toggle-fragment-at-point)))))
 
+(defvar-local agent-shell-ui--fold-cycle-state nil
+  "Current global fold cycle state for the buffer.
+One of `expanded', `collapsed', or nil (first call — derive from buffer).
+Used by `agent-shell-ui-cycle-all-fragments' to alternate.")
+
+(defun agent-shell-ui--enclosing-fragment-position ()
+  "Return position of the nearest enclosing fragment, or nil.
+
+If point is already on a fragment (has `agent-shell-ui-state' property),
+return point.  Otherwise scan backward for the nearest fragment whose
+block range contains point, then forward as a fallback."
+  (if (get-text-property (point) 'agent-shell-ui-state)
+      (point)
+    (let ((pos (point)))
+      (or (save-mark-and-excursion
+            (when-let* ((match (text-property-search-backward
+                                'agent-shell-ui-state nil
+                                (lambda (_ state) (and state t))
+                                t))
+                        (start (prop-match-beginning match))
+                        (block (agent-shell-ui--block-range :position start))
+                        ((>= pos (map-elt block :start)))
+                        ((<= pos (map-elt block :end))))
+              start))
+          (save-mark-and-excursion
+            (when-let* ((match (text-property-search-forward
+                                'agent-shell-ui-state nil
+                                (lambda (_ state) (and state t))
+                                t)))
+              (prop-match-beginning match)))))))
+
+(defun agent-shell-ui-toggle-fragment-dwim ()
+  "Toggle fragment fold at or near point.
+
+If point is on a fragment, toggle that fragment.  If point is inside a
+fragment's block range, toggle the enclosing fragment.  Otherwise jump
+to the next fragment forward and toggle it.
+
+After toggling, point returns to its starting position when the action
+target was the enclosing fragment; otherwise point moves to the toggled
+fragment.  Silent no-op when no fragment exists at or after point —
+matches `agent-shell-ui-toggle-fragment-at-point' convention."
+  (interactive)
+  (when-let* ((origin (point))
+              (target (agent-shell-ui--enclosing-fragment-position)))
+    (let* ((target-id (map-elt (get-text-property target 'agent-shell-ui-state)
+                               :qualified-id))
+           (origin-id (map-elt (get-text-property origin 'agent-shell-ui-state)
+                               :qualified-id))
+           (origin-was-inside (and origin-id (equal origin-id target-id))))
+      (goto-char target)
+      (agent-shell-ui-toggle-fragment-at-point)
+      (when origin-was-inside
+        (when-let* ((block (agent-shell-ui--block-range :position target))
+                    (max-pos (map-elt block :end)))
+          (goto-char (min origin max-pos)))))))
+
+(defun agent-shell-ui--majority-collapsed-p ()
+  "Return non-nil when most navigatable fragments in the buffer are collapsed.
+Used by `agent-shell-ui-cycle-all-fragments' on its first invocation
+when the cycle state hasn't been established yet."
+  (save-mark-and-excursion
+    (goto-char (point-min))
+    ;; Dedup: text-property-search may visit the same qualified-id
+    ;; multiple times within a single block's propertied region.
+    (let ((collapsed 0)
+          (expanded 0)
+          (seen-ids nil)
+          next)
+      (while (setq next (text-property-search-forward
+                         'agent-shell-ui-state nil
+                         (lambda (_ state)
+                           (and state (map-elt state :navigatable)))
+                         t))
+        (when-let* ((start (prop-match-beginning next))
+                    (state (get-text-property start 'agent-shell-ui-state))
+                    (qid (map-elt state :qualified-id))
+                    ((not (member qid seen-ids))))
+          (push qid seen-ids)
+          (if (map-elt state :collapsed)
+              (setq collapsed (1+ collapsed))
+            (setq expanded (1+ expanded))))
+        (goto-char (prop-match-end next)))
+      (> collapsed expanded))))
+
+(defun agent-shell-ui-cycle-all-fragments ()
+  "Cycle global fold state: all-expanded ↔ all-collapsed.
+
+Iterates over every navigatable fragment in the buffer.  When the
+current global state is `expanded', all fragments are collapsed and
+state flips to `collapsed'.  Next invocation expands them all again.
+
+On first invocation (state nil), examines the buffer to derive the
+current majority state, then flips it — so the command \"does what you
+see,\" regardless of any manual folds in place.
+
+Fragments whose `:navigatable' flag is nil (e.g. inline message chunks)
+are skipped — they have no fold indicator to act on."
+  (interactive)
+  (let* ((target-collapsed
+          (pcase agent-shell-ui--fold-cycle-state
+            ('expanded t)
+            ('collapsed nil)
+            (_ (not (agent-shell-ui--majority-collapsed-p)))))
+         (origin (point))
+         ;; Dedup: text-property-search may visit the same qualified-id
+         ;; multiple times within a single block's propertied region.
+         (seen-ids nil))
+    (save-mark-and-excursion
+      (goto-char (point-min))
+      (let (next)
+        (while (setq next (text-property-search-forward
+                           'agent-shell-ui-state nil
+                           (lambda (_ state)
+                             (and state (map-elt state :navigatable)))
+                           t))
+          (when-let* ((start (prop-match-beginning next))
+                      (state (get-text-property start 'agent-shell-ui-state))
+                      (qid (map-elt state :qualified-id))
+                      ((not (member qid seen-ids))))
+            (push qid seen-ids)
+            (when (eq (map-elt state :collapsed) (not target-collapsed))
+              (goto-char start)
+              (agent-shell-ui-toggle-fragment-at-point)))
+          (goto-char (prop-match-end next)))))
+    (setq agent-shell-ui--fold-cycle-state
+          (if target-collapsed 'collapsed 'expanded))
+    (goto-char origin)))
+
 (defun agent-shell-ui--string-or-nil (str)
   "Return STR if it is not nil and not empty, otherwise nil."
   (and str (not (string-empty-p str)) str))
