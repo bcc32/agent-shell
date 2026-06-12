@@ -41,6 +41,13 @@ jobs:
       - name: Report test results
         uses: dorny/test-reporter@v1
         if: always()
+        # Reporter needs `checks: write' on GITHUB_TOKEN; for PRs from
+        # forks GitHub downgrades the token to read-only, so this step
+        # fails with "Resource not accessible by integration".
+        # `continue-on-error' keeps the workflow green in that case —
+        # the actual test pass/fail is still reflected by the `Run
+        # tests' step above.
+        continue-on-error: true
         with:
           name: ERT Tests
           path: test-results.xml
