@@ -7012,7 +7012,8 @@ Returns an alist with insertion details or nil otherwise:
                 (insert text)
                 (setq insert-end (point))
                 (narrow-to-region insert-start insert-end)
-                (agent-shell--render-markdown :render-images nil)))
+                ;; TODO: Render prompt markdown?
+                ))
             (when submit
               (shell-maker-submit)))
           `((:buffer . ,shell-buffer)

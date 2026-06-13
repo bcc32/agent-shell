@@ -246,8 +246,6 @@ Returns an alist with insertion details or nil otherwise:
           (progn
             (agent-shell-viewport-edit-mode)
             (agent-shell-viewport--initialize))
-        (let ((inhibit-read-only t))
-          (markdown-overlays-put))
         (agent-shell-viewport-view-mode)
         (agent-shell-viewport--initialize :prompt prompt)
         ;; (setq view-exit-action 'kill-buffer) TODO
@@ -260,8 +258,8 @@ Returns an alist with insertion details or nil otherwise:
          :submit t
          :no-focus t)
         ;; TODO: Point should go to beginning of response after submission.
-        (let ((inhibit-read-only t))
-          (markdown-overlays-put))))))
+        ;; TODO: Render prompt markdown?
+        ))))
 
 (defun agent-shell-viewport-interrupt ()
   "Interrupt active agent shell request."
